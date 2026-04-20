@@ -110,11 +110,11 @@ export class UserSimulator {
       if (normalizedScreen === this.lastScreenContent) {
         this.staticTicks++;
         const lastAction = this.actionHistory[this.actionHistory.length - 1];
-        if (lastAction === '<WAIT>' && this.staticTicks >= 15) {
+        if (lastAction === '<WAIT>' && this.staticTicks >= 60) {
           debugLogger.log(
             `[SIMULATOR] Forcing re-evaluation of static screen after ${this.staticTicks} ticks of waiting`,
           );
-          reminderMessage = `\n[IMPORTANT] The screen has been static for ${this.staticTicks} ticks while you were in <WAIT> state. The agent might be stuck waiting for a tool call or confirmation that is not visible on the screen. If you suspect this is the case, you may attempt to unblock it by sending 'y\\r' or a similar confirmation command, instead of continuing to wait.\n`;
+          reminderMessage = `\n[IMPORTANT] The screen has been static for ${this.staticTicks} ticks while you were in <WAIT> state. If you are confident the agent is stuck waiting for a hidden confirmation, you may attempt to unblock it by sending 'y\\r'. However, if the screen is blank because the agent is running a long task (e.g., compilation or execution), you should continue to <WAIT>.\n`;
           this.staticTicks = 0;
         } else {
           return;
@@ -175,7 +175,8 @@ CRITICAL RULES:
 - RULE 1: If there is ANY active spinner (e.g., ⠋, ⠙, ⠹, ⠸, ⠼, ⠴, ⠧) or an elapsed time indicator (e.g., "0s", "7s") anywhere on the screen, the agent is STILL WORKING. Your action MUST be <WAIT>. Do NOT issue commands, even if a text prompt is visible below it.
 - RULE 2: If there is an "Action Required" or confirmation prompt on the screen, or if the agent states it is exiting Plan Mode, or if the agent's thought bubble contains phrases like "present a plan", "exit plan mode", or "strategy" indicating it is ready for plan approval, YOU MUST HANDLE IT (State 2). This takes precedence over everything else.
 - RULE 3: DO NOT formulate rules in "new_rule" that advise waiting when the agent indicates it is ready to present a plan, exit plan mode, or has finished a thought process expressing intent to act.
-- RULE 4: You MUST output a strictly formatted JSON object with no markdown wrappers or extra text.
+- RULE 4: If the screen is completely empty (blank), DO NOT assume the agent is waiting for confirmation. Prefer to <WAIT> unless you have strong reason to believe it is stuck based on previous turns.
+- RULE 5: You MUST output a strictly formatted JSON object with no markdown wrappers or extra text.
 
 JSON FORMAT:
 {
