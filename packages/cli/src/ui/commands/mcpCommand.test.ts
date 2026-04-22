@@ -77,6 +77,7 @@ describe('mcpCommand', () => {
     getGeminiClient: ReturnType<typeof vi.fn>;
     getMcpClientManager: ReturnType<typeof vi.fn>;
     getResourceRegistry: ReturnType<typeof vi.fn>;
+    getSkillManager: ReturnType<typeof vi.fn>;
     setUserInteractedWithMcp: ReturnType<typeof vi.fn>;
     getLastMcpError: ReturnType<typeof vi.fn>;
   };
@@ -112,6 +113,9 @@ describe('mcpCommand', () => {
       })),
       getResourceRegistry: vi.fn().mockReturnValue({
         getAllResources: vi.fn().mockReturnValue([]),
+      }),
+      getSkillManager: vi.fn().mockReturnValue({
+        getAllSkills: vi.fn().mockReturnValue([]),
       }),
       setUserInteractedWithMcp: vi.fn(),
       getLastMcpError: vi.fn().mockReturnValue(undefined),

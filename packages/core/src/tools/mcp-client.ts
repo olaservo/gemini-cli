@@ -76,6 +76,12 @@ import {
   type ResourceRegistry,
   type MCPResource,
 } from '../resources/resource-registry.js';
+import type { SkillDefinition } from '../skills/skillLoader.js';
+import {
+  declaresSkillsExtension,
+  discoverMcpSkills,
+  skillSourceTag,
+} from '../skills/mcpSkillDiscovery.js';
 import { validateMcpPolicyToolNames } from '../policy/toml-loader.js';
 import {
   sanitizeEnvironment,
@@ -238,8 +244,17 @@ export class McpClient implements McpProgressReporter {
     const resources = await this.discoverResources();
     this.updateResourceRegistry(resources, registries.resourceRegistry);
 
-    if (prompts.length === 0 && tools.length === 0 && resources.length === 0) {
-      throw new Error('No prompts, tools, or resources found on the server.');
+    const skills = await this.discoverSkills();
+
+    if (
+      prompts.length === 0 &&
+      tools.length === 0 &&
+      resources.length === 0 &&
+      skills.length === 0
+    ) {
+      throw new Error(
+        'No prompts, tools, resources, or skills found on the server.',
+      );
     }
 
     for (const prompt of prompts) {
@@ -288,6 +303,9 @@ export class McpClient implements McpProgressReporter {
       registries.promptRegistry.removePromptsByServer(this.serverName);
       registries.resourceRegistry.removeResourcesByServer(this.serverName);
     }
+    this.cliConfig
+      .getSkillManager?.()
+      ?.setSkillsForSource(skillSourceTag(this.serverName), []);
     this.updateStatus(MCPServerStatus.DISCONNECTING);
     const client = this.client;
     this.client = undefined;
@@ -356,6 +374,73 @@ export class McpClient implements McpProgressReporter {
   private async discoverResources(): Promise<Resource[]> {
     this.assertConnected();
     return discoverResources(this.serverName, this.client!, this.cliConfig);
+  }
+
+  /**
+   * Discover skills published by this server per the skills-over-MCP SEP
+   * (`io.modelcontextprotocol/skills`). The extension capability is
+   * informational — we attempt `skill://index.json` regardless (the SEP
+   * permits clients to skip when the capability is absent, but a probe is
+   * cheap and resolves to an empty list on servers that don't implement it).
+   *
+   * Every short-circuit clears the source slot via `setSkillsForSource(tag, [])`
+   * so a previously-registered set doesn't survive a config toggle (admin
+   * disabling skills, `skillsEnabled: false`, or a folder becoming untrusted).
+   */
+  private async discoverSkills(): Promise<SkillDefinition[]> {
+    this.assertConnected();
+    const skillManager = this.cliConfig.getSkillManager?.();
+    if (!skillManager) {
+      return [];
+    }
+    const tag = skillSourceTag(this.serverName);
+    if (!skillManager.isAdminEnabled()) {
+      skillManager.setSkillsForSource(tag, []);
+      return [];
+    }
+    // Parallel to `SkillManager.discoverSkills`, which skips workspace skills
+    // in untrusted folders. Stdio MCP servers can't even connect in untrusted
+    // folders (see `createTransport`), but HTTP/SSE servers can — gating here
+    // keeps them from injecting skills into an untrusted workspace's context.
+    if (!this.cliConfig.isTrustedFolder()) {
+      debugLogger.log(
+        `Skipping skill discovery for server '${this.serverName}': folder is not trusted.`,
+      );
+      skillManager.setSkillsForSource(tag, []);
+      return [];
+    }
+    if (this.serverConfig.skillsEnabled === false) {
+      debugLogger.log(
+        `Skill discovery disabled by config for server '${this.serverName}'.`,
+      );
+      skillManager.setSkillsForSource(tag, []);
+      return [];
+    }
+    // Skip the probe on servers that don't advertise either the resources
+    // capability or the skills extension. `declaresSkillsExtension` lets
+    // extension-only servers opt in even if they haven't surfaced resources
+    // in the generic capability slot.
+    const caps = this.client!.getServerCapabilities();
+    const hasResources = caps?.resources != null;
+    const declaresSkills = declaresSkillsExtension(this.client!);
+    if (!hasResources && !declaresSkills) {
+      skillManager.setSkillsForSource(tag, []);
+      return [];
+    }
+    if (declaresSkills) {
+      debugLogger.log(
+        `Server '${this.serverName}' declares io.modelcontextprotocol/skills extension.`,
+      );
+    }
+    const discovered = await discoverMcpSkills(this.client!, this.serverName);
+    const filtered = applySkillFilters(discovered, this.serverConfig);
+    skillManager.setSkillsForSource(tag, filtered);
+    if (filtered.length > 0) {
+      debugLogger.log(
+        `Registered ${filtered.length} skill(s) from MCP server '${this.serverName}'.`,
+      );
+    }
+    return filtered;
   }
 
   private updateResourceRegistry(
@@ -435,7 +520,22 @@ export class McpClient implements McpProgressReporter {
           debugLogger.log(
             `🔔 Received resource update notification from '${this.serverName}'`,
           );
-          await this.refreshResources();
+          // Skills are published through the same `resources/read` surface,
+          // so a resources/list_changed notification can also mean the
+          // `skill://index.json` moved — re-run skill discovery in parallel
+          // with the resource refresh. `discoverSkills` short-circuits when
+          // disabled or when the folder is untrusted, so this is a no-op in
+          // those cases.
+          await Promise.all([
+            this.refreshResources(),
+            this.discoverSkills().catch((err) => {
+              debugLogger.warn(
+                `Skill re-discovery for '${this.serverName}' failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }),
+          ]);
         },
       );
     }
@@ -1487,6 +1587,40 @@ export async function discoverResources(
   return resources;
 }
 
+/**
+ * Apply per-server include/exclude skill filters from config.
+ *
+ * Semantics match `includeTools`/`excludeTools`:
+ *   - `includeSkills` undefined → no allowlist, all skills pass.
+ *   - `includeSkills` `[]` → empty allowlist, no skill passes.
+ *   - `excludeSkills` filters after the allowlist; entries always block.
+ *
+ * Treating empty `includeSkills` as deny-all (rather than "no filter") is what
+ * keeps `mergeMcpConfigs` safe: when two configs intersect to `[]`, the result
+ * is the strictest possible, not the loosest.
+ */
+function applySkillFilters(
+  skills: SkillDefinition[],
+  serverConfig: MCPServerConfig,
+): SkillDefinition[] {
+  // SkillManager lookups are case-insensitive; keep filter semantics aligned
+  // so config entries like 'Pull-Requests' match a skill named 'pull-requests'.
+  let result = skills;
+  if (serverConfig.includeSkills !== undefined) {
+    const allow = new Set(
+      serverConfig.includeSkills.map((n) => n.toLowerCase()),
+    );
+    result = result.filter((s) => allow.has(s.name.toLowerCase()));
+  }
+  if (serverConfig.excludeSkills && serverConfig.excludeSkills.length > 0) {
+    const block = new Set(
+      serverConfig.excludeSkills.map((n) => n.toLowerCase()),
+    );
+    result = result.filter((s) => !block.has(s.name.toLowerCase()));
+  }
+  return result;
+}
+
 async function listResources(
   mcpServerName: string,
   mcpClient: Client,
@@ -1759,6 +1893,14 @@ export interface McpContext {
       mcpName?: string;
       source?: string;
     }>;
+  };
+  /**
+   * Optional accessor for the SkillManager so MCP clients can register
+   * skills published by servers per the skills-over-MCP SEP.
+   */
+  getSkillManager?(): {
+    setSkillsForSource(sourceTag: string, skills: SkillDefinition[]): void;
+    isAdminEnabled(): boolean;
   };
 }
 

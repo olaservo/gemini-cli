@@ -15,15 +15,22 @@ import { coreEvents } from '../utils/events.js';
 export { type SkillDefinition };
 
 export class SkillManager {
+  /** Merged view: localSkills + sourcedSkills with local-wins precedence. */
   private skills: SkillDefinition[] = [];
-  private activeSkillNames: Set<string> = new Set();
+  /** Filesystem-owned skills (built-in, extension, user, workspace). */
+  private localSkills: SkillDefinition[] = [];
   private adminSkillsEnabled = true;
+
+  /** Skills owned by dynamic sources (e.g. MCP servers), keyed by source tag. */
+  private sourcedSkills: Map<string, SkillDefinition[]> = new Map();
 
   /**
    * Clears all discovered skills.
    */
   clearSkills(): void {
     this.skills = [];
+    this.localSkills = [];
+    this.sourcedSkills.clear();
   }
 
   /**
@@ -49,7 +56,12 @@ export class SkillManager {
     extensions: GeminiCLIExtension[] = [],
     isTrusted: boolean = false,
   ): Promise<void> {
-    this.clearSkills();
+    // Reset only the filesystem-owned portion; sourced skills (e.g. MCP) are
+    // managed by their providers via setSkillsForSource and should survive a
+    // filesystem re-scan. The merged view in this.skills keeps whatever MCP
+    // skills were already registered so concurrent getSkills() callers don't
+    // briefly see an empty MCP set during the async filesystem scan.
+    this.localSkills = [];
 
     // 1. Built-in skills (lowest precedence)
     await this.discoverBuiltinSkills();
@@ -76,6 +88,7 @@ export class SkillManager {
       debugLogger.debug(
         'Workspace skills disabled because folder is not trusted.',
       );
+      this.rebuildSkillList();
       return;
     }
 
@@ -89,6 +102,8 @@ export class SkillManager {
       storage.getProjectAgentSkillsDir(),
     );
     this.addSkillsWithPrecedence(projectAgentSkills);
+
+    this.rebuildSkillList();
   }
 
   /**
@@ -112,15 +127,72 @@ export class SkillManager {
    */
   addSkills(skills: SkillDefinition[]): void {
     this.addSkillsWithPrecedence(skills);
+    this.rebuildSkillList();
+  }
+
+  /**
+   * Replaces the set of skills registered under a given source tag. Used by
+   * dynamic providers (e.g. MCP servers) to keep their skills in sync with
+   * server state — pass an empty array on disconnect to clear. Local
+   * filesystem skills (isBuiltin, extension, user, workspace) always win on
+   * name collision; when a MCP skill is shadowed by a local skill a warning
+   * is emitted once.
+   */
+  setSkillsForSource(sourceTag: string, skills: SkillDefinition[]): void {
+    if (skills.length === 0) {
+      this.sourcedSkills.delete(sourceTag);
+    } else {
+      this.sourcedSkills.set(sourceTag, skills);
+    }
+    this.rebuildSkillList();
+  }
+
+  /**
+   * Rebuilds the merged skill list from localSkills + sourcedSkills. Local
+   * filesystem skills always win on name collision (case-insensitive); the
+   * first sourced skill to claim a name wins across MCP sources, with later
+   * duplicates dropped with a warning.
+   */
+  private rebuildSkillList(): void {
+    const localNames = new Set(
+      this.localSkills.map((s) => s.name.toLowerCase()),
+    );
+    const takenNames = new Set(localNames);
+    const merged: SkillDefinition[] = [...this.localSkills];
+
+    for (const [sourceTag, sourcedSkills] of this.sourcedSkills) {
+      for (const skill of sourcedSkills) {
+        const key = skill.name.toLowerCase();
+        if (localNames.has(key)) {
+          coreEvents.emitFeedback(
+            'warning',
+            `Skill "${skill.name}" from ${sourceTag} is shadowed by a local skill of the same name.`,
+          );
+          continue;
+        }
+        if (takenNames.has(key)) {
+          coreEvents.emitFeedback(
+            'warning',
+            `Skill "${skill.name}" from ${sourceTag} is shadowed by another source that registered the same name first.`,
+          );
+          continue;
+        }
+        takenNames.add(key);
+        merged.push(skill);
+      }
+    }
+
+    this.skills = merged;
   }
 
   private addSkillsWithPrecedence(newSkills: SkillDefinition[]): void {
     const skillMap = new Map<string, SkillDefinition>(
-      this.skills.map((s) => [s.name, s]),
+      this.localSkills.map((s) => [s.name.toLowerCase(), s]),
     );
 
     for (const newSkill of newSkills) {
-      const existingSkill = skillMap.get(newSkill.name);
+      const key = newSkill.name.toLowerCase();
+      const existingSkill = skillMap.get(key);
       if (existingSkill && existingSkill.location !== newSkill.location) {
         if (existingSkill.isBuiltin) {
           debugLogger.warn(
@@ -133,10 +205,10 @@ export class SkillManager {
           );
         }
       }
-      skillMap.set(newSkill.name, newSkill);
+      skillMap.set(key, newSkill);
     }
 
-    this.skills = Array.from(skillMap.values());
+    this.localSkills = Array.from(skillMap.values());
   }
 
   /**
@@ -188,19 +260,5 @@ export class SkillManager {
     return (
       this.skills.find((s) => s.name.toLowerCase() === lowercaseName) ?? null
     );
-  }
-
-  /**
-   * Activates a skill by name.
-   */
-  activateSkill(name: string): void {
-    this.activeSkillNames.add(name);
-  }
-
-  /**
-   * Checks if a skill is active.
-   */
-  isSkillActive(name: string): boolean {
-    return this.activeSkillNames.has(name);
   }
 }

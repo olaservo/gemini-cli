@@ -498,6 +498,15 @@ export class MCPServerConfig {
     readonly targetAudience?: string,
     /* targetServiceAccount format: <service-account-name>@<project-num>.iam.gserviceaccount.com */
     readonly targetServiceAccount?: string,
+    // Skills-over-MCP (io.modelcontextprotocol/skills) extension controls.
+    // Appended at the end so existing positional callers remain source-compatible.
+    // When false, skill discovery is suppressed for this server even if it
+    // declares the extension capability. Defaults to true.
+    readonly skillsEnabled?: boolean,
+    // Allowlist of skill names to surface from this server (exact match).
+    readonly includeSkills?: string[],
+    // Blocklist of skill names to hide from this server (exact match).
+    readonly excludeSkills?: string[],
   ) {}
 }
 

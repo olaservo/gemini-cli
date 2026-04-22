@@ -244,6 +244,16 @@ const listAction = async (
     .getAllResources()
     .filter((entry) => serverNames.includes(entry.serverName));
 
+  const skillManager = config.getSkillManager();
+  const mcpSkills = skillManager
+    .getAllSkills()
+    .filter(
+      (skill) =>
+        skill.source === 'mcp' &&
+        !!skill.mcp &&
+        serverNames.includes(skill.mcp.serverName),
+    );
+
   const authStatus: HistoryItemMcpStatus['authStatus'] = {};
   const tokenStorage = new MCPOAuthTokenStorage();
   for (const serverName of serverNames) {
@@ -300,6 +310,12 @@ const listAction = async (
       uri: resource.uri,
       mimeType: resource.mimeType,
       description: resource.description,
+    })),
+    skills: mcpSkills.map((skill) => ({
+      serverName: skill.mcp!.serverName,
+      name: skill.name,
+      description: skill.description,
+      uri: skill.mcp!.skillUri,
     })),
     authStatus,
     enablementState,

@@ -13,7 +13,11 @@ import {
   StreamableHTTPError,
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuthProviderType, type Config } from '../config/config.js';
+import {
+  AuthProviderType,
+  type Config,
+  type MCPServerConfig,
+} from '../config/config.js';
 import { GoogleCredentialProvider } from '../mcp/google-auth-provider.js';
 import { MCPOAuthProvider } from '../mcp/oauth-provider.js';
 import { MCPOAuthTokenStorage } from '../mcp/oauth-token-storage.js';
@@ -394,7 +398,9 @@ describe('mcp-client', () => {
           promptRegistry,
           resourceRegistry,
         }),
-      ).rejects.toThrow('No prompts, tools, or resources found on the server.');
+      ).rejects.toThrow(
+        'No prompts, tools, resources, or skills found on the server.',
+      );
     });
 
     it('should discover tools if server supports them', async () => {
@@ -1138,6 +1144,223 @@ describe('mcp-client', () => {
       expect(mockedToolRegistry.removeMcpToolsByServer).toHaveBeenCalledOnce();
       expect(mockedPromptRegistry.removePromptsByServer).toHaveBeenCalledOnce();
       expect(resourceRegistry.removeResourcesByServer).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('McpClient > discoverSkills wiring', () => {
+    function makeHarness(opts: {
+      indexSkills: Array<{ name: string; description?: string; url?: string }>;
+      capabilities?: unknown;
+      adminEnabled?: boolean;
+      serverConfig?: MCPServerConfig;
+    }) {
+      const setSkillsForSource = vi.fn();
+      const isAdminEnabled = vi
+        .fn()
+        .mockReturnValue(opts.adminEnabled !== false);
+      const readResource = vi.fn().mockResolvedValue({
+        contents: [
+          {
+            uri: 'skill://index.json',
+            mimeType: 'application/json',
+            text: JSON.stringify({
+              skills: opts.indexSkills.map((s) => ({
+                type: 'skill-md',
+                name: s.name,
+                description: s.description ?? 'd',
+                url: s.url ?? `skill://${s.name}/SKILL.md`,
+              })),
+            }),
+          },
+        ],
+      });
+      const mockedClient = {
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        close: vi.fn(),
+        getStatus: vi.fn(),
+        registerCapabilities: vi.fn(),
+        setRequestHandler: vi.fn(),
+        setNotificationHandler: vi.fn(),
+        getServerCapabilities: vi
+          .fn()
+          .mockReturnValue(opts.capabilities ?? { tools: {}, resources: {} }),
+        listTools: vi.fn().mockResolvedValue({
+          tools: [
+            {
+              name: 't',
+              inputSchema: { type: 'object', properties: {} },
+            },
+          ],
+        }),
+        listPrompts: vi.fn().mockResolvedValue({ prompts: [] }),
+        request: vi.fn().mockResolvedValue({ resources: [] }),
+        readResource,
+      };
+      vi.mocked(ClientLib.Client).mockReturnValue(
+        mockedClient as unknown as ClientLib.Client,
+      );
+      vi.spyOn(SdkClientStdioLib, 'StdioClientTransport').mockReturnValue(
+        {} as SdkClientStdioLib.StdioClientTransport,
+      );
+      const context: McpContext = {
+        ...MOCK_CONTEXT,
+        getSkillManager: () => ({
+          setSkillsForSource,
+          isAdminEnabled,
+        }),
+      };
+      const client = new McpClient(
+        'test-server',
+        opts.serverConfig ?? { command: 'test-command' },
+        workspaceContext,
+        context,
+        false,
+        '0.0.1',
+      );
+      const registries = {
+        toolRegistry: {
+          registerTool: vi.fn(),
+          sortTools: vi.fn(),
+          getToolsByServer: vi.fn().mockReturnValue([]),
+          getMessageBus: vi.fn().mockReturnValue(undefined),
+          removeMcpToolsByServer: vi.fn(),
+        } as unknown as ToolRegistry,
+        promptRegistry: {
+          registerPrompt: vi.fn(),
+          getPromptsByServer: vi.fn().mockReturnValue([]),
+          removePromptsByServer: vi.fn(),
+        } as unknown as PromptRegistry,
+        resourceRegistry: {
+          getResourcesByServer: vi.fn().mockReturnValue([]),
+          setResourcesForServer: vi.fn(),
+          removeResourcesByServer: vi.fn(),
+        } as unknown as ResourceRegistry,
+      };
+      return {
+        client,
+        context,
+        registries,
+        mockedClient,
+        setSkillsForSource,
+        isAdminEnabled,
+        readResource,
+      };
+    }
+
+    it('skips the index probe and clears the source when admin has disabled skills', async () => {
+      const h = makeHarness({
+        indexSkills: [{ name: 'x' }],
+        adminEnabled: false,
+      });
+      await h.client.connect();
+      await h.client.discoverInto(h.context, h.registries);
+      expect(h.readResource).not.toHaveBeenCalled();
+      // Clearing the source is what makes a mid-session admin toggle take
+      // effect — leaving previously-registered skills in place would let
+      // them survive past the policy change.
+      expect(h.setSkillsForSource).toHaveBeenCalledWith('mcp:test-server', []);
+    });
+
+    it('skips the index probe and clears the source when serverConfig.skillsEnabled is false', async () => {
+      const h = makeHarness({
+        indexSkills: [{ name: 'x' }],
+        serverConfig: { command: 'c', skillsEnabled: false },
+      });
+      await h.client.connect();
+      await h.client.discoverInto(h.context, h.registries);
+      expect(h.readResource).not.toHaveBeenCalled();
+      expect(h.setSkillsForSource).toHaveBeenCalledWith('mcp:test-server', []);
+    });
+
+    it('skips the index probe and clears the source when the current folder is not trusted', async () => {
+      // The stdio transport is separately gated on `isTrustedFolder` at
+      // connect time, so let that call return true; the second call —
+      // inside `discoverSkills` — returns false and must short-circuit
+      // before any `skill://index.json` probe is issued.
+      const isTrustedFolder = vi
+        .fn()
+        .mockReturnValueOnce(true)
+        .mockReturnValue(false);
+      MOCK_CONTEXT = { ...MOCK_CONTEXT_DEFAULT, isTrustedFolder };
+      const h = makeHarness({ indexSkills: [{ name: 'x' }] });
+      await h.client.connect();
+      await h.client.discoverInto(h.context, h.registries);
+      expect(h.readResource).not.toHaveBeenCalled();
+      expect(h.setSkillsForSource).toHaveBeenCalledWith('mcp:test-server', []);
+    });
+
+    it('skips the index probe and clears the source when server advertises neither resources nor the extension', async () => {
+      const h = makeHarness({
+        indexSkills: [{ name: 'x' }],
+        capabilities: { tools: {} },
+      });
+      await h.client.connect();
+      await h.client.discoverInto(h.context, h.registries);
+      expect(h.readResource).not.toHaveBeenCalled();
+      expect(h.setSkillsForSource).toHaveBeenCalledWith('mcp:test-server', []);
+    });
+
+    it('treats an empty includeSkills list as deny-all (matches includeTools semantics)', async () => {
+      const h = makeHarness({
+        indexSkills: [{ name: 'alpha' }, { name: 'beta' }],
+        serverConfig: { command: 'c', includeSkills: [] },
+      });
+      await h.client.connect();
+      await h.client.discoverInto(h.context, h.registries);
+      // The discovery probe still runs (the gate is filter-time, not
+      // probe-time), but every skill is filtered out and the source is
+      // registered as empty.
+      expect(h.setSkillsForSource).toHaveBeenCalledWith('mcp:test-server', []);
+    });
+
+    it('applies includeSkills before registering (case-insensitive)', async () => {
+      const h = makeHarness({
+        indexSkills: [{ name: 'alpha' }, { name: 'beta' }, { name: 'gamma' }],
+        serverConfig: { command: 'c', includeSkills: ['Alpha', 'gamma'] },
+      });
+      await h.client.connect();
+      await h.client.discoverInto(h.context, h.registries);
+      expect(h.setSkillsForSource).toHaveBeenCalledWith(
+        'mcp:test-server',
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'alpha' }),
+          expect.objectContaining({ name: 'gamma' }),
+        ]),
+      );
+      const registered = h.setSkillsForSource.mock.calls[0][1];
+      expect(registered.map((s: { name: string }) => s.name).sort()).toEqual([
+        'alpha',
+        'gamma',
+      ]);
+    });
+
+    it('applies excludeSkills before registering (case-insensitive)', async () => {
+      const h = makeHarness({
+        indexSkills: [{ name: 'alpha' }, { name: 'beta' }],
+        serverConfig: { command: 'c', excludeSkills: ['BETA'] },
+      });
+      await h.client.connect();
+      await h.client.discoverInto(h.context, h.registries);
+      const registered = h.setSkillsForSource.mock.calls[0][1];
+      expect(registered.map((s: { name: string }) => s.name)).toEqual([
+        'alpha',
+      ]);
+    });
+
+    it('clears the source on disconnect', async () => {
+      const h = makeHarness({ indexSkills: [{ name: 'alpha' }] });
+      await h.client.connect();
+      await h.client.discoverInto(h.context, h.registries);
+      expect(h.setSkillsForSource).toHaveBeenLastCalledWith(
+        'mcp:test-server',
+        expect.arrayContaining([expect.objectContaining({ name: 'alpha' })]),
+      );
+      await h.client.disconnect();
+      expect(h.setSkillsForSource).toHaveBeenLastCalledWith(
+        'mcp:test-server',
+        [],
+      );
     });
   });
 
