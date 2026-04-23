@@ -281,7 +281,7 @@ ${resourcesBlock}`,
         llmContent: `<activated_skill name="${skillName}">
 <source>MCP server: ${safeServerName}</source>
 <location>${safeSkillUri}</location>
-<instructions source="mcp:${safeServerName}" trust="untrusted">
+<instructions trust="untrusted">
 ${safeBody}
 </instructions>
 
