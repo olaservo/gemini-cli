@@ -637,6 +637,47 @@ describe('McpClientManager', () => {
       expect(lastCall[1].includeTools).toEqual(['user-tool']);
     });
 
+    it('should intersect includeSkills case-insensitively across configs', async () => {
+      // The runtime filter (`applySkillFilters`) is case-insensitive, so the
+      // merge must be too — otherwise `['Pull-Requests']` ∩ `['pull-requests']`
+      // silently produces an empty allowlist (deny-all) when the user clearly
+      // meant to allow that skill.
+      const manager = setupManager(new McpClientManager('0.0.1', mockConfig));
+      const userConfig = { includeSkills: ['Pull-Requests', 'review'] };
+      const extConfig = {
+        command: 'node',
+        args: ['ext.js'],
+        includeSkills: ['pull-requests'],
+      };
+
+      await manager.maybeDiscoverMcpServer('test-server', userConfig);
+      await manager.maybeDiscoverMcpServer('test-server', extConfig);
+
+      const lastCall = vi.mocked(McpClient).mock.calls[0];
+      // The intersected entry comes from `base` (userConfig in this load
+      // order), so its original casing is preserved — the value carried into
+      // the next layer is what the user wrote.
+      expect(lastCall[1].includeSkills).toEqual(['Pull-Requests']);
+    });
+
+    it('should result in empty includeSkills (deny-all) if the intersection is empty', async () => {
+      const manager = setupManager(new McpClientManager('0.0.1', mockConfig));
+      const userConfig = { includeSkills: ['user-skill'] };
+      const extConfig = {
+        command: 'node',
+        args: ['ext.js'],
+        includeSkills: ['ext-skill'],
+      };
+
+      await manager.maybeDiscoverMcpServer('test-server', userConfig);
+      await manager.maybeDiscoverMcpServer('test-server', extConfig);
+
+      const lastCall = vi.mocked(McpClient).mock.calls[0];
+      // Matches the includeTools contract — `[]` means deny-all, not "no
+      // filter."
+      expect(lastCall[1].includeSkills).toEqual([]);
+    });
+
     it('should allow partial overrides of connection properties', async () => {
       const manager = setupManager(new McpClientManager('0.0.1', mockConfig));
       const extConfig = { command: 'node', args: ['ext.js'], timeout: 1000 };

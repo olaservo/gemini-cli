@@ -2883,6 +2883,23 @@ export const SETTINGS_SCHEMA_DEFINITIONS: Record<
           'Tools that should be disabled for this server even if exposed.',
         items: { type: 'string' },
       },
+      skillsEnabled: {
+        type: 'boolean',
+        description:
+          'Whether to discover Agent Skills published by this server per the skills-over-MCP SEP (io.modelcontextprotocol/skills). Defaults to true.',
+      },
+      includeSkills: {
+        type: 'array',
+        description:
+          'Allowlist of skill names to surface from this server. When omitted or empty all skills are surfaced. Matching is case-insensitive.',
+        items: { type: 'string' },
+      },
+      excludeSkills: {
+        type: 'array',
+        description:
+          'Blocklist of skill names to hide from this server even when published. When omitted or empty no skills are blocked. Matching is case-insensitive.',
+        items: { type: 'string' },
+      },
       extension: {
         type: 'object',
         description:

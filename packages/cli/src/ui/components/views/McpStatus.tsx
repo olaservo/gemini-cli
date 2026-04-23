@@ -13,6 +13,7 @@ import type {
   HistoryItemMcpStatus,
   JsonMcpPrompt,
   JsonMcpResource,
+  JsonMcpSkill,
   JsonMcpTool,
 } from '../../types.js';
 
@@ -21,6 +22,7 @@ interface McpStatusProps {
   tools: JsonMcpTool[];
   prompts: JsonMcpPrompt[];
   resources: JsonMcpResource[];
+  skills?: JsonMcpSkill[];
   blockedServers: Array<{ name: string; extensionName: string }>;
   serverStatus: (serverName: string) => MCPServerStatus;
   authStatus: HistoryItemMcpStatus['authStatus'];
@@ -37,6 +39,7 @@ export const McpStatus: React.FC<McpStatusProps> = ({
   tools,
   prompts,
   resources,
+  skills = [],
   blockedServers,
   serverStatus,
   authStatus,
@@ -97,11 +100,15 @@ export const McpStatus: React.FC<McpStatusProps> = ({
         const serverResources = resources.filter(
           (resource) => resource.serverName === serverName,
         );
+        const serverSkills = skills.filter(
+          (skill) => skill.serverName === serverName,
+        );
         const originalStatus = serverStatus(serverName);
         const hasCachedItems =
           serverTools.length > 0 ||
           serverPrompts.length > 0 ||
-          serverResources.length > 0;
+          serverResources.length > 0 ||
+          serverSkills.length > 0;
         const status =
           originalStatus === MCPServerStatus.DISCONNECTED && hasCachedItems
             ? MCPServerStatus.CONNECTED
@@ -163,6 +170,10 @@ export const McpStatus: React.FC<McpStatusProps> = ({
           parts.push(
             `${resourceCount} ${resourceCount === 1 ? 'resource' : 'resources'}`,
           );
+        }
+        const skillCount = serverSkills.length;
+        if (skillCount > 0) {
+          parts.push(`${skillCount} ${skillCount === 1 ? 'skill' : 'skills'}`);
         }
 
         const serverAuthStatus = authStatus[serverName];
@@ -313,6 +324,31 @@ export const McpStatus: React.FC<McpStatusProps> = ({
                     hidden
                   </Text>
                 )}
+              </Box>
+            )}
+
+            {serverSkills.length > 0 && (
+              <Box flexDirection="column" marginLeft={2}>
+                <Text color={theme.text.primary}>
+                  Skills (io.modelcontextprotocol/skills):
+                </Text>
+                {serverSkills.map((skill) => (
+                  <Box key={skill.name} flexDirection="column">
+                    <Text>
+                      - <Text color={theme.text.primary}>{skill.name}</Text>
+                      <Text
+                        color={theme.text.secondary}
+                      >{` (${skill.uri})`}</Text>
+                    </Text>
+                    {showDescriptions && skill.description && (
+                      <Box marginLeft={2}>
+                        <Text color={theme.text.secondary}>
+                          {skill.description.trim()}
+                        </Text>
+                      </Box>
+                    )}
+                  </Box>
+                ))}
               </Box>
             )}
           </Box>

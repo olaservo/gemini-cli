@@ -357,6 +357,31 @@ export class McpClientManager {
       ]),
     ];
 
+    // Same semantics applied to skill include/exclude lists. Intersection is
+    // case-insensitive because `applySkillFilters` matches case-insensitively;
+    // a case-sensitive intersection here would silently produce an empty
+    // allowlist when configs use different casing for the same skill name.
+    let includeSkills: string[] | undefined;
+    if (base.includeSkills && override.includeSkills) {
+      const overrideLower = new Set(
+        override.includeSkills.map((s) => s.toLowerCase()),
+      );
+      includeSkills = base.includeSkills.filter((s) =>
+        overrideLower.has(s.toLowerCase()),
+      );
+      // If the intersection is empty, keep `[]` (deny-all) to match
+      // `includeTools` semantics — an undefined allowlist would mean "allow
+      // everything," which is looser than either config alone.
+    } else {
+      includeSkills = override.includeSkills ?? base.includeSkills;
+    }
+    const excludeSkills = [
+      ...new Set([
+        ...(base.excludeSkills ?? []),
+        ...(override.excludeSkills ?? []),
+      ]),
+    ];
+
     const env = { ...(base.env ?? {}), ...(override.env ?? {}) };
 
     return {
@@ -366,6 +391,8 @@ export class McpClientManager {
       ...override,
       includeTools,
       excludeTools: excludeTools.length > 0 ? excludeTools : undefined,
+      includeSkills,
+      excludeSkills: excludeSkills.length > 0 ? excludeSkills : undefined,
       env: Object.keys(env).length > 0 ? env : undefined,
       extension: override.extension ?? base.extension,
     };

@@ -44,6 +44,11 @@ export const SkillsList: React.FC<SkillsListProps> = ({
           {skill.isBuiltin && (
             <Text color={theme.text.secondary}>{' [Built-in]'}</Text>
           )}
+          {skill.source === 'mcp' && skill.mcp && (
+            <Text color={theme.text.secondary}>
+              {` [mcp:${skill.mcp.serverName}]`}
+            </Text>
+          )}
         </Box>
         {showDescriptions && skill.description && (
           <Box marginLeft={2}>

@@ -163,6 +163,47 @@ describe('ReadMcpResourceTool', () => {
     expect(result.error?.message).toContain('Resource not found');
   });
 
+  it('should resolve a bare skill:// URI via the manager fallback', async () => {
+    // Model passes the unqualified URI (no "serverName:" prefix) — e.g.
+    // when following a sibling reference inside an MCP-served skill. The
+    // manager's URI-only fallback (`getAllResources().find`) locates the
+    // matching resource and reads it from the right server.
+    const bareUri = 'skill://pull-requests/references/GUIDE.md';
+    const serverName = 'github-skills';
+    mockMcpManager.findResourceByUri.mockImplementation((input: string) => {
+      if (input === bareUri) {
+        return {
+          uri: bareUri,
+          serverName,
+          name: 'pr_guide',
+        };
+      }
+      return undefined;
+    });
+    const mockClient = {
+      readResource: vi.fn().mockResolvedValue({
+        contents: [{ text: 'guide contents' }],
+      }),
+    };
+    mockMcpManager.getClient.mockReturnValue(mockClient);
+
+    const invocation = (
+      tool as unknown as {
+        createInvocation: (params: Record<string, unknown>) => {
+          execute: (options: { abortSignal: AbortSignal }) => Promise<unknown>;
+        };
+      }
+    ).createInvocation({ uri: bareUri });
+    const result = (await invocation.execute({ abortSignal })) as {
+      llmContent: string;
+    };
+
+    expect(mockMcpManager.findResourceByUri).toHaveBeenCalledWith(bareUri);
+    expect(mockMcpManager.getClient).toHaveBeenCalledWith(serverName);
+    expect(mockClient.readResource).toHaveBeenCalledWith(bareUri);
+    expect(result.llmContent).toBe('guide contents\n');
+  });
+
   it('should return error if reading fails', async () => {
     const uri = 'protocol://resource';
     const serverName = 'test-server';

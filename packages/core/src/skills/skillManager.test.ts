@@ -318,6 +318,167 @@ description: project-desc
     expect(service.isAdminEnabled()).toBe(false);
   });
 
+  describe('setSkillsForSource', () => {
+    it('registers, replaces, and clears MCP-sourced skills by source tag', () => {
+      const service = new SkillManager();
+      const alpha: SkillDefinition = {
+        name: 'alpha',
+        description: 'first',
+        location: 'skill://alpha/SKILL.md',
+        body: '',
+        source: 'mcp',
+        mcp: { serverName: 'srv', skillUri: 'skill://alpha/SKILL.md' },
+      };
+      const beta: SkillDefinition = {
+        name: 'beta',
+        description: 'second',
+        location: 'skill://beta/SKILL.md',
+        body: '',
+        source: 'mcp',
+        mcp: { serverName: 'srv', skillUri: 'skill://beta/SKILL.md' },
+      };
+
+      service.setSkillsForSource('mcp:srv', [alpha, beta]);
+      expect(
+        service
+          .getSkills()
+          .map((s) => s.name)
+          .sort(),
+      ).toEqual(['alpha', 'beta']);
+
+      service.setSkillsForSource('mcp:srv', [alpha]);
+      expect(service.getSkills().map((s) => s.name)).toEqual(['alpha']);
+
+      service.setSkillsForSource('mcp:srv', []);
+      expect(service.getSkills()).toHaveLength(0);
+    });
+
+    it('keeps skills from different source tags independent', () => {
+      const service = new SkillManager();
+      const a: SkillDefinition = {
+        name: 'a',
+        description: '',
+        location: 'skill://a/SKILL.md',
+        body: '',
+        source: 'mcp',
+        mcp: { serverName: 'one', skillUri: 'skill://a/SKILL.md' },
+      };
+      const b: SkillDefinition = {
+        name: 'b',
+        description: '',
+        location: 'skill://b/SKILL.md',
+        body: '',
+        source: 'mcp',
+        mcp: { serverName: 'two', skillUri: 'skill://b/SKILL.md' },
+      };
+      service.setSkillsForSource('mcp:one', [a]);
+      service.setSkillsForSource('mcp:two', [b]);
+      expect(
+        service
+          .getSkills()
+          .map((s) => s.name)
+          .sort(),
+      ).toEqual(['a', 'b']);
+
+      service.setSkillsForSource('mcp:one', []);
+      expect(service.getSkills().map((s) => s.name)).toEqual(['b']);
+    });
+
+    it('lets a filesystem-loaded skill shadow an MCP skill of the same name', async () => {
+      const service = new SkillManager();
+      const warnSpy = vi.spyOn(coreEvents, 'emitFeedback');
+
+      // Simulate a filesystem-loaded skill by using addSkills (local skills
+      // leave `source` unset).
+      service.addSkills([
+        {
+          name: 'collision',
+          description: 'local',
+          location: '/local/collision/SKILL.md',
+          body: 'local body',
+        },
+      ]);
+
+      service.setSkillsForSource('mcp:srv', [
+        {
+          name: 'collision',
+          description: 'remote',
+          location: 'skill://collision/SKILL.md',
+          body: '',
+          source: 'mcp',
+          mcp: {
+            serverName: 'srv',
+            skillUri: 'skill://collision/SKILL.md',
+          },
+        },
+      ]);
+
+      const names = service.getSkills().map((s) => s.name);
+      expect(names).toEqual(['collision']);
+      const winner = service.getSkill('collision');
+      expect(winner?.source).toBeUndefined(); // local wins
+      expect(winner?.body).toBe('local body');
+      expect(warnSpy).toHaveBeenCalledWith(
+        'warning',
+        expect.stringContaining('shadowed by a local skill'),
+      );
+    });
+
+    it('deduplicates skills when two MCP sources publish the same name', () => {
+      const service = new SkillManager();
+      const warnSpy = vi.spyOn(coreEvents, 'emitFeedback');
+
+      service.setSkillsForSource('mcp:one', [
+        {
+          name: 'dup',
+          description: 'from one',
+          location: 'skill://dup/SKILL.md',
+          body: '',
+          source: 'mcp',
+          mcp: { serverName: 'one', skillUri: 'skill://dup/SKILL.md' },
+        },
+      ]);
+      service.setSkillsForSource('mcp:two', [
+        {
+          name: 'dup',
+          description: 'from two',
+          location: 'skill://dup/SKILL.md',
+          body: '',
+          source: 'mcp',
+          mcp: { serverName: 'two', skillUri: 'skill://dup/SKILL.md' },
+        },
+      ]);
+
+      const matches = service.getSkills().filter((s) => s.name === 'dup');
+      expect(matches).toHaveLength(1);
+      expect(matches[0].mcp?.serverName).toBe('one');
+      expect(warnSpy).toHaveBeenCalledWith(
+        'warning',
+        expect.stringContaining(
+          'shadowed by another source that registered the same name first',
+        ),
+      );
+    });
+
+    it('applies setDisabledSkills to MCP-sourced skills', () => {
+      const service = new SkillManager();
+      const skill: SkillDefinition = {
+        name: 'pr-review',
+        description: 'pr workflow',
+        location: 'skill://pr-review/SKILL.md',
+        body: '',
+        source: 'mcp',
+        mcp: { serverName: 'srv', skillUri: 'skill://pr-review/SKILL.md' },
+      };
+      service.setSkillsForSource('mcp:srv', [skill]);
+      service.setDisabledSkills(['pr-review']);
+
+      expect(service.getSkills()).toHaveLength(0);
+      expect(service.getAllSkills()).toHaveLength(1);
+      expect(service.getAllSkills()[0].disabled).toBe(true);
+    });
+  });
+
   describe('Conflict Detection', () => {
     it('should emit UI warning when a non-built-in skill is overridden', async () => {
       const emitFeedbackSpy = vi.spyOn(coreEvents, 'emitFeedback');

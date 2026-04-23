@@ -24,12 +24,38 @@ export interface TestTool {
 }
 
 /**
+ * Definition of a test skill served via the skills-over-MCP SEP
+ * (io.modelcontextprotocol/skills). The server registers a
+ * `skill://<name>/SKILL.md` resource plus any supporting files, and
+ * synthesizes a `skill://index.json` discovery index on request.
+ */
+export interface TestSkill {
+  /** Skill name — must match the final path segment in the skill URI. */
+  name: string;
+  /** Short description for the index and resource metadata. */
+  description: string;
+  /** Full SKILL.md file contents (frontmatter + body). */
+  skillMd: string;
+  /**
+   * Optional supporting files, keyed by path relative to the skill root
+   * (e.g. `references/GUIDE.md`), value is the file content.
+   */
+  supportingFiles?: Record<string, string>;
+}
+
+/**
  * Configuration structure for the generic test MCP server template.
  */
 export interface TestMcpConfig {
   name: string;
   version?: string;
   tools: TestTool[];
+  /**
+   * Skills served per the skills-over-MCP SEP. When non-empty, the server
+   * declares `capabilities.extensions["io.modelcontextprotocol/skills"]`
+   * and publishes a `skill://index.json` resource.
+   */
+  skills?: TestSkill[];
 }
 
 /**
@@ -65,6 +91,29 @@ export class TestMcpServerBuilder {
       description,
       inputSchema,
       response: responseObj,
+    });
+    return this;
+  }
+
+  /**
+   * Adds a skill to the test server. The server will advertise the
+   * `io.modelcontextprotocol/skills` extension capability and publish the
+   * skill's resources per the SEP.
+   */
+  addSkill(
+    name: string,
+    skillMd: string,
+    options: {
+      description?: string;
+      supportingFiles?: Record<string, string>;
+    } = {},
+  ): this {
+    if (!this.config.skills) this.config.skills = [];
+    this.config.skills.push({
+      name,
+      description: options.description ?? `Test skill: ${name}`,
+      skillMd,
+      supportingFiles: options.supportingFiles,
     });
     return this;
   }

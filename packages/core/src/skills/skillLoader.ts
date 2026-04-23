@@ -19,9 +19,16 @@ export interface SkillDefinition {
   name: string;
   /** A concise description of what the skill does. */
   description: string;
-  /** The absolute path to the skill's source file on disk. */
+  /**
+   * Identifier for the skill's source content. For filesystem skills this is
+   * an absolute path to the SKILL.md file. For MCP-served skills this is the
+   * `skill://` URI and should NOT be treated as a filesystem path.
+   */
   location: string;
-  /** The core logic/instructions of the skill. */
+  /**
+   * The core logic/instructions of the skill. May be an empty string for MCP
+   * skills until the body has been fetched on first activation.
+   */
   body: string;
   /** Whether the skill is currently disabled. */
   disabled?: boolean;
@@ -29,6 +36,17 @@ export interface SkillDefinition {
   isBuiltin?: boolean;
   /** The name of the extension that provided this skill, if any. */
   extensionName?: string;
+  /**
+   * Where this skill was loaded from. Only set for MCP-served skills today;
+   * filesystem skills leave this unset (built-in status is tracked by the
+   * separate `isBuiltin` flag).
+   */
+  source?: 'mcp';
+  /** Origin metadata for MCP-served skills (skills-over-MCP SEP). */
+  mcp?: {
+    serverName: string;
+    skillUri: string;
+  };
 }
 
 export const FRONTMATTER_REGEX =

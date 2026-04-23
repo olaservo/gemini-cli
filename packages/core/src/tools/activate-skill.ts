@@ -22,6 +22,37 @@ import { ACTIVATE_SKILL_TOOL_NAME } from './tool-names.js';
 import { ToolErrorType } from './tool-error.js';
 import { getActivateSkillDefinition } from './definitions/coreTools.js';
 import { resolveToolDeclaration } from './definitions/resolver.js';
+import type { SkillDefinition } from '../skills/skillLoader.js';
+import { FRONTMATTER_REGEX, parseFrontmatter } from '../skills/skillLoader.js';
+import { uriParentPrefix } from '../skills/mcpSkillDiscovery.js';
+import { debugLogger } from '../utils/debugLogger.js';
+
+// Cap the SKILL.md body returned by an MCP server. Bodies are inlined into the
+// model's context on activation, so an unbounded response is both a memory and
+// a context-budget DoS vector. 256 KiB is several orders of magnitude above any
+// reasonable hand-authored SKILL.md.
+const MAX_SKILL_BODY_BYTES = 256 * 1024;
+
+// MCP-served strings reach the model inside a `<instructions>` XML block
+// marked `trust="untrusted"`. Without escaping, a malicious server could emit
+// `</instructions>` (or a closing `</activated_skill>`) in its body to break
+// out of the fence and impersonate trusted host content to the model.
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// The activation confirmation prompt is rendered as Markdown. Untrusted
+// server-supplied strings are escaped so a server can't inject trusted-looking
+// UI (e.g. `**TRUSTED SOURCE**` or a fake `[Click here](link)` link) into the
+// user's trust decision.
+function mdEscape(value: string): string {
+  return value.replace(/([\\`*_{}[\]()#+\-.!|>~])/g, '\\$1');
+}
 
 /**
  * Parameters for the ActivateSkill tool
@@ -69,6 +100,88 @@ class ActivateSkillToolInvocation extends BaseToolInvocation<
     return this.cachedFolderStructure;
   }
 
+  /**
+   * For MCP-sourced skills, builds a listing of the skill's sibling resources
+   * (supporting files under the same `skill://<skill-path>/` prefix) from the
+   * resource registry. Presented to the model so it knows what's available
+   * and can fetch any supporting file with `read_mcp_resource`.
+   */
+  private buildMcpAvailableResources(skill: SkillDefinition): string {
+    if (!skill.mcp) return '(none)';
+    const registry = this.config.getResourceRegistry();
+    const serverResources = registry.getResourcesByServer(skill.mcp.serverName);
+    const skillUri = skill.mcp.skillUri;
+    const skillRoot = uriParentPrefix(skillUri);
+    if (!skillRoot) return '(none)';
+    const siblings = serverResources
+      .filter((r) => r.uri.startsWith(skillRoot) && r.uri !== skillUri)
+      .map(
+        (r) =>
+          `- ${xmlEscape(r.uri)}${
+            r.description ? `  — ${xmlEscape(r.description)}` : ''
+          }`,
+      );
+    if (siblings.length === 0) {
+      return `(supporting files may be referenced from within the skill body; fetch them with read_mcp_resource using the URI exactly as written in the skill instructions)`;
+    }
+    return siblings.join('\n');
+  }
+
+  /**
+   * Reads the SKILL.md body for an MCP skill from the server and caches it
+   * on the skill definition. Re-reads are avoided on subsequent activations.
+   */
+  private async fetchMcpSkillBody(skill: SkillDefinition): Promise<string> {
+    if (!skill.mcp) return '';
+    if (skill.body) return skill.body;
+
+    const mcpManager = this.config.getMcpClientManager();
+    const client = mcpManager?.getClient(skill.mcp.serverName);
+    if (!client) {
+      throw new Error(
+        `MCP server '${skill.mcp.serverName}' is not connected; cannot load skill '${skill.name}'.`,
+      );
+    }
+
+    const result = await client.readResource(skill.mcp.skillUri);
+    let text = '';
+    for (const content of result.contents ?? []) {
+      if ('text' in content && typeof content.text === 'string') {
+        text = content.text;
+        break;
+      }
+    }
+    if (!text) {
+      throw new Error(
+        `Skill '${skill.name}' at ${skill.mcp.skillUri} returned no text content.`,
+      );
+    }
+    // Bound the response before we keep it around or hand it to the model.
+    const textBytes = Buffer.byteLength(text, 'utf8');
+    if (textBytes > MAX_SKILL_BODY_BYTES) {
+      throw new Error(
+        `Skill '${skill.name}' body from ${skill.mcp.skillUri} is ${textBytes} bytes, exceeds the ${MAX_SKILL_BODY_BYTES}-byte limit; refusing to activate.`,
+      );
+    }
+
+    const match = text.match(FRONTMATTER_REGEX);
+    if (match) {
+      // If the SKILL.md carries its own frontmatter, the `name` it advertises
+      // must match the name the index pointed us at. Mismatches signal body /
+      // index drift or a server trying to deliver a different skill than the
+      // one the user is about to trust; reject rather than activate.
+      const frontmatter = parseFrontmatter(match[1] ?? '');
+      if (frontmatter && frontmatter.name !== skill.name) {
+        throw new Error(
+          `Skill '${skill.name}' body frontmatter advertises name '${frontmatter.name}'; refusing to activate.`,
+        );
+      }
+    }
+    const body = match ? (match[2]?.trim() ?? '') : text.trim();
+    skill.body = body;
+    return body;
+  }
+
   protected override async getConfirmationDetails(
     _abortSignal: AbortSignal,
   ): Promise<ToolCallConfirmationDetails | false> {
@@ -87,9 +200,18 @@ class ActivateSkillToolInvocation extends BaseToolInvocation<
       return false;
     }
 
-    const folderStructure = await this.getOrFetchFolderStructure(
-      skill.location,
-    );
+    const resourcesBlock =
+      skill.source === 'mcp'
+        ? this.buildMcpAvailableResources(skill)
+        : await this.getOrFetchFolderStructure(skill.location);
+
+    const provenance =
+      skill.source === 'mcp' && skill.mcp
+        ? `\n\n**Source:** MCP server \`${mdEscape(skill.mcp.serverName)}\` (${mdEscape(skill.mcp.skillUri)})`
+        : '';
+
+    const safeDescription =
+      skill.source === 'mcp' ? mdEscape(skill.description) : skill.description;
 
     const confirmationDetails: ToolCallConfirmationDetails = {
       type: 'info',
@@ -97,10 +219,10 @@ class ActivateSkillToolInvocation extends BaseToolInvocation<
       prompt: `You are about to enable the specialized agent skill **${skillName}**.
 
 **Description:**
-${skill.description}
+${safeDescription}${provenance}
 
 **Resources to be shared with the model:**
-${folderStructure}`,
+${resourcesBlock}`,
       onConfirm: async (outcome: ToolConfirmationOutcome) => {
         await this.publishPolicyUpdate(outcome);
       },
@@ -127,10 +249,53 @@ ${folderStructure}`,
       };
     }
 
-    skillManager.activateSkill(skillName);
+    if (skill.source === 'mcp' && skill.mcp) {
+      let body: string;
+      try {
+        body = await this.fetchMcpSkillBody(skill);
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        debugLogger.warn(
+          `Failed to fetch MCP skill '${skillName}' body: ${errorMessage}`,
+        );
+        return {
+          llmContent: `Error: ${errorMessage}`,
+          returnDisplay: `Error: ${errorMessage}`,
+          error: {
+            message: errorMessage,
+            type: ToolErrorType.EXECUTION_FAILED,
+          },
+        };
+      }
+      const siblings = this.buildMcpAvailableResources(skill);
+      // The body comes from an MCP server — treat every server-derived value
+      // (body, serverName, skillUri, siblings) as untrusted and XML-escape it
+      // so the content can't break out of the `<instructions>` fence or forge
+      // attributes on the surrounding elements.
+      const safeServerName = xmlEscape(skill.mcp.serverName);
+      const safeSkillUri = xmlEscape(skill.mcp.skillUri);
+      const safeBody = xmlEscape(body);
+      const preamble = `(This skill is served by MCP server '${safeServerName}'. Any URI referenced here or inside the instructions can be fetched with the read_mcp_resource tool — pass the URI exactly as written; the host resolves the server.)`;
+      return {
+        llmContent: `<activated_skill name="${skillName}">
+<source>MCP server: ${safeServerName}</source>
+<location>${safeSkillUri}</location>
+<instructions trust="untrusted">
+${safeBody}
+</instructions>
 
-    // Add the skill's directory to the workspace context so the agent has permission
-    // to read its bundled resources.
+<available_resources>
+${preamble}
+${siblings}
+</available_resources>
+</activated_skill>`,
+        returnDisplay: `Skill **${skillName}** activated from MCP server \`${mdEscape(skill.mcp.serverName)}\` (${mdEscape(skill.mcp.skillUri)}).`,
+      };
+    }
+
+    // Add the filesystem skill's directory to the workspace context so the
+    // agent has permission to read its bundled resources.
     this.config
       .getWorkspaceContext()
       .addDirectory(path.dirname(skill.location));

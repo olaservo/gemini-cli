@@ -355,12 +355,20 @@ export interface JsonMcpResource {
   description?: string;
 }
 
+export interface JsonMcpSkill {
+  serverName: string;
+  name: string;
+  description: string;
+  uri: string;
+}
+
 export type HistoryItemMcpStatus = HistoryItemBase & {
   type: 'mcp_status';
   servers: Record<string, MCPServerConfig>;
   tools: JsonMcpTool[];
   prompts: JsonMcpPrompt[];
   resources: JsonMcpResource[];
+  skills?: JsonMcpSkill[];
   authStatus: Record<
     string,
     'authenticated' | 'expired' | 'unauthenticated' | 'not-configured'
