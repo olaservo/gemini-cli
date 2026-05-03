@@ -64,9 +64,11 @@ describe('ListMcpResourcesTool', () => {
     };
 
     expect(mockMcpManager.getAllResources).toHaveBeenCalled();
-    expect(result.llmContent).toContain('Available MCP Resources:');
-    expect(result.llmContent).toContain('protocol://r1');
-    expect(result.llmContent).toContain('protocol://r2');
+    expect(result.llmContent).toContain('Available MCP Resources');
+    // The model needs uri and server as separate parameters of
+    // read_mcp_resource, so the list format keeps them separate too.
+    expect(result.llmContent).toContain('uri=protocol://r1 server=server1');
+    expect(result.llmContent).toContain('uri=protocol://r2 server=server2');
     expect(result.returnDisplay).toBe('Listed 2 resources.');
   });
 

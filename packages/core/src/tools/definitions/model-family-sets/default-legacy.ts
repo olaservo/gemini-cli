@@ -762,16 +762,22 @@ The agent did not use the todo list because this task could be completed by a ti
   read_mcp_resource: {
     name: READ_MCP_RESOURCE_TOOL_NAME,
     description:
-      'Reads the content of a specified Model Context Protocol (MCP) resource.',
+      'Reads the content of a specific Model Context Protocol (MCP) resource. Use list_mcp_resources first to discover available resources and the server each one is exposed by.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
+        server: {
+          description:
+            'Name of the MCP server hosting the resource (as reported by list_mcp_resources).',
+          type: 'string',
+        },
         uri: {
-          description: 'The URI of the MCP resource to read.',
+          description:
+            'URI of the MCP resource to read (e.g. "file:///path/to/file", "skill://name").',
           type: 'string',
         },
       },
-      required: ['uri'],
+      required: ['server', 'uri'],
     },
   },
 

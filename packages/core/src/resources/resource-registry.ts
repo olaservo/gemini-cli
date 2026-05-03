@@ -45,16 +45,13 @@ export class ResourceRegistry {
   }
 
   /**
-   * Find a resource by its identifier.
-   * Format: serverName:uri (e.g., "myserver:file:///data.txt")
+   * Direct lookup by (serverName, uri) pair. Both fields are explicit so URIs
+   * containing colons (file://, https://, skill://) work without ambiguity.
    */
-  findResourceByUri(identifier: string): MCPResource | undefined {
-    const colonIndex = identifier.indexOf(':');
-    if (colonIndex <= 0) {
-      return undefined;
-    }
-    const serverName = identifier.substring(0, colonIndex);
-    const uri = identifier.substring(colonIndex + 1);
+  findResourceByServerAndUri(
+    serverName: string,
+    uri: string,
+  ): MCPResource | undefined {
     return this.resources.get(resourceKey(serverName, uri));
   }
 

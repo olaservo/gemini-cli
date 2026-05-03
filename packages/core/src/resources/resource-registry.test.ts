@@ -49,20 +49,74 @@ describe('ResourceRegistry', () => {
     expect(resources[0].uri).toBe('baz');
   });
 
-  it('finds resources by serverName:uri identifier', () => {
-    registry.setResourcesForServer('a', [createResource()]);
-    registry.setResourcesForServer('b', [
-      createResource({ uri: 'file:///tmp/bar.txt' }),
-    ]);
+  describe('findResourceByServerAndUri', () => {
+    it('returns the resource for a (server, uri) pair', () => {
+      registry.setResourcesForServer('a', [createResource()]);
+      registry.setResourcesForServer('b', [
+        createResource({ uri: 'file:///tmp/bar.txt' }),
+      ]);
 
-    expect(
-      registry.findResourceByUri('b:file:///tmp/bar.txt')?.serverName,
-    ).toBe('b');
-    expect(
-      registry.findResourceByUri('a:file:///tmp/foo.txt')?.serverName,
-    ).toBe('a');
-    expect(registry.findResourceByUri('a:file:///tmp/bar.txt')).toBeUndefined();
-    expect(registry.findResourceByUri('nonexistent')).toBeUndefined();
+      expect(
+        registry.findResourceByServerAndUri('a', 'file:///tmp/foo.txt')
+          ?.serverName,
+      ).toBe('a');
+      expect(
+        registry.findResourceByServerAndUri('b', 'file:///tmp/bar.txt')
+          ?.serverName,
+      ).toBe('b');
+    });
+
+    it('returns undefined when the URI is not on the named server', () => {
+      registry.setResourcesForServer('a', [createResource()]);
+      expect(
+        registry.findResourceByServerAndUri('a', 'file:///tmp/missing.txt'),
+      ).toBeUndefined();
+      expect(
+        registry.findResourceByServerAndUri('b', 'file:///tmp/foo.txt'),
+      ).toBeUndefined();
+    });
+
+    it('handles URIs containing colons without ambiguity', () => {
+      // Both server and URI are passed as separate arguments, so URIs with
+      // `://` (file://, https://, skill://) cannot be misinterpreted as the
+      // server-name boundary the way a single colon-joined identifier could.
+      registry.setResourcesForServer('a', [
+        createResource({ uri: 'https://example.com/data' }),
+      ]);
+      registry.setResourcesForServer('skills-server', [
+        createResource({ uri: 'skill://index.json' }),
+      ]);
+      expect(
+        registry.findResourceByServerAndUri('a', 'https://example.com/data')
+          ?.serverName,
+      ).toBe('a');
+      expect(
+        registry.findResourceByServerAndUri(
+          'skills-server',
+          'skill://index.json',
+        )?.serverName,
+      ).toBe('skills-server');
+    });
+
+    it('scopes the lookup to a single server when the URI is shared across servers', () => {
+      // Once the Skills extension lands, multiple servers will routinely
+      // expose `skill://index.json`. Server-scoped lookup keeps these
+      // distinct instead of silently picking one.
+      registry.setResourcesForServer('github', [
+        createResource({ uri: 'skill://index.json', name: 'github-skills' }),
+      ]);
+      registry.setResourcesForServer('filesystem', [
+        createResource({ uri: 'skill://index.json', name: 'fs-skills' }),
+      ]);
+      expect(
+        registry.findResourceByServerAndUri('github', 'skill://index.json')
+          ?.name,
+      ).toBe('github-skills');
+      expect(
+        registry.findResourceByServerAndUri('filesystem', 'skill://index.json')
+          ?.name,
+      ).toBe('fs-skills');
+    });
   });
 
   it('clears resources for a server', () => {

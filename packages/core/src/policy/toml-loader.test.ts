@@ -1069,7 +1069,10 @@ priority = 100
         ).toBe(PolicyDecision.ALLOW);
 
         const readMcpResult = await engine.check(
-          { name: 'read_mcp_resource', args: { uri: 'test://resource' } },
+          {
+            name: 'read_mcp_resource',
+            args: { server: 'test-server', uri: 'test://resource' },
+          },
           undefined,
         );
         expect(

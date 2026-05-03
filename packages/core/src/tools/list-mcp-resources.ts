@@ -102,10 +102,14 @@ class ListMcpResourcesToolInvocation extends BaseToolInvocation<
       };
     }
 
-    // Format the list
-    let content = 'Available MCP Resources:\n';
+    // Format the list. The `uri=… server=…` shape is intentional: the model
+    // feeds these back into read_mcp_resource as separate parameters, and
+    // colon-joined `server:uri` is ambiguous because URIs themselves contain
+    // colons (file://, https://, skill://).
+    let content =
+      'Available MCP Resources (pass both uri and server to read_mcp_resource):\n';
     for (const resource of resources) {
-      content += `- ${resource.serverName}:${resource.uri}`;
+      content += `- uri=${resource.uri} server=${resource.serverName}`;
       if (resource.name) {
         content += ` | ${resource.name}`;
       }

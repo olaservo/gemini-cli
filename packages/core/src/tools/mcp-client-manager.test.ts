@@ -857,63 +857,67 @@ describe('McpClientManager', () => {
     });
   });
 
-  describe('findResourceByUri', () => {
-    it('should find resource by exact URI match', () => {
-      const mockResource = { uri: 'test://resource1', name: 'Resource 1' };
-      const mockResourceRegistry = {
-        getAllResources: vi.fn().mockReturnValue([mockResource]),
-        findResourceByUri: vi.fn(),
-      };
-      mockConfig.getResourceRegistry.mockReturnValue(
-        mockResourceRegistry as unknown as ResourceRegistry,
-      );
-
-      const manager = setupManager(new McpClientManager('0.0.1', mockConfig));
-
-      const result = manager.findResourceByUri('test://resource1');
-      expect(result).toBe(mockResource);
+  describe('findResource', () => {
+    const buildRegistry = (
+      resources: Array<{ uri: string; serverName: string; name?: string }>,
+    ) => ({
+      findResourceByServerAndUri: vi.fn((serverName: string, uri: string) =>
+        resources.find((r) => r.serverName === serverName && r.uri === uri),
+      ),
     });
 
-    it('should try ResourceRegistry.findResourceByUri first', () => {
-      const mockResourceQualified = {
-        uri: 'test://resource1',
-        name: 'Resource 1 Qualified',
+    it('delegates to the registry with the (server, uri) pair', () => {
+      const resource = {
+        uri: 'skill://index.json',
+        serverName: 'github',
+        name: 'github-skills',
       };
-      const mockResourceDirect = {
-        uri: 'test-server:test://resource1',
-        name: 'Resource 1 Direct',
-      };
-      const mockResourceRegistry = {
-        getAllResources: vi.fn().mockReturnValue([mockResourceDirect]),
-        findResourceByUri: vi.fn().mockReturnValue(mockResourceQualified),
-      };
+      const registry = buildRegistry([resource]);
       mockConfig.getResourceRegistry.mockReturnValue(
-        mockResourceRegistry as unknown as ResourceRegistry,
+        registry as unknown as ResourceRegistry,
       );
 
       const manager = setupManager(new McpClientManager('0.0.1', mockConfig));
+      const result = manager.findResource('github', 'skill://index.json');
 
-      const result = manager.findResourceByUri('test-server:test://resource1');
-      expect(result).toBe(mockResourceQualified);
-      expect(mockResourceRegistry.findResourceByUri).toHaveBeenCalledWith(
-        'test-server:test://resource1',
+      expect(result).toBe(resource);
+      expect(registry.findResourceByServerAndUri).toHaveBeenCalledWith(
+        'github',
+        'skill://index.json',
       );
-      expect(mockResourceRegistry.getAllResources).not.toHaveBeenCalled();
     });
 
-    it('should return undefined if both fail', () => {
-      const mockResourceRegistry = {
-        getAllResources: vi.fn().mockReturnValue([]),
-        findResourceByUri: vi.fn().mockReturnValue(undefined),
-      };
+    it('keeps colliding URIs distinct when multiple servers expose the same one', () => {
+      // The motivating skills regression: previously a bare URI lookup
+      // silently picked the first match. Server-scoped lookup returns the
+      // right resource for each server.
+      const registry = buildRegistry([
+        { uri: 'skill://index.json', serverName: 'github', name: 'gh' },
+        { uri: 'skill://index.json', serverName: 'filesystem', name: 'fs' },
+      ]);
       mockConfig.getResourceRegistry.mockReturnValue(
-        mockResourceRegistry as unknown as ResourceRegistry,
+        registry as unknown as ResourceRegistry,
       );
 
       const manager = setupManager(new McpClientManager('0.0.1', mockConfig));
+      expect(manager.findResource('github', 'skill://index.json')?.name).toBe(
+        'gh',
+      );
+      expect(
+        manager.findResource('filesystem', 'skill://index.json')?.name,
+      ).toBe('fs');
+    });
 
-      const result = manager.findResourceByUri('non-existent');
-      expect(result).toBeUndefined();
+    it('returns undefined when the (server, uri) pair is unknown', () => {
+      const registry = buildRegistry([]);
+      mockConfig.getResourceRegistry.mockReturnValue(
+        registry as unknown as ResourceRegistry,
+      );
+
+      const manager = setupManager(new McpClientManager('0.0.1', mockConfig));
+      expect(
+        manager.findResource('nonexistent', 'skill://nope'),
+      ).toBeUndefined();
     });
   });
 });

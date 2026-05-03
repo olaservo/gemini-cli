@@ -172,19 +172,16 @@ export class McpClientManager {
     return undefined;
   }
 
-  findResourceByUri(uri: string): MCPResource | undefined {
-    if (!this.mainResourceRegistry) return undefined;
-
-    // Try serverName:uri format first
-    const qualifiedMatch = this.mainResourceRegistry.findResourceByUri(uri);
-    if (qualifiedMatch) {
-      return qualifiedMatch;
-    }
-
-    // Try direct URI match
-    return this.mainResourceRegistry
-      .getAllResources()
-      .find((r) => r.uri === uri);
+  /**
+   * Direct (server, uri) lookup. Both fields are required because URIs alone
+   * are ambiguous when multiple servers expose the same one (e.g. several
+   * servers exposing `skill://index.json` once the Skills extension lands).
+   */
+  findResource(serverName: string, uri: string): MCPResource | undefined {
+    return this.mainResourceRegistry?.findResourceByServerAndUri(
+      serverName,
+      uri,
+    );
   }
 
   getAllResources(): MCPResource[] {

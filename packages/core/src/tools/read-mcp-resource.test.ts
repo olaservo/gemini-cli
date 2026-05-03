@@ -18,14 +18,14 @@ describe('ReadMcpResourceTool', () => {
     };
   };
   let mockMcpManager: {
-    findResourceByUri: Mock;
+    findResource: Mock;
     getClient: Mock;
   };
   const abortSignal = new AbortController().signal;
 
   beforeEach(() => {
     mockMcpManager = {
-      findResourceByUri: vi.fn(),
+      findResource: vi.fn(),
       getClient: vi.fn(),
     };
 
@@ -41,18 +41,17 @@ describe('ReadMcpResourceTool', () => {
     );
   });
 
-  it('should successfully read a resource', async () => {
+  it('reads a resource using the (server, uri) pair', async () => {
     const uri = 'protocol://resource';
     const serverName = 'test-server';
     const resourceName = 'Test Resource';
     const resourceContent = 'Resource Content';
 
-    mockMcpManager.findResourceByUri.mockReturnValue({
+    mockMcpManager.findResource.mockReturnValue({
       uri,
       serverName,
       name: resourceName,
     });
-
     const mockClient = {
       readResource: vi.fn().mockResolvedValue({
         contents: [{ text: resourceContent }],
@@ -67,9 +66,8 @@ describe('ReadMcpResourceTool', () => {
           execute: (options: { abortSignal: AbortSignal }) => Promise<unknown>;
         };
       }
-    ).createInvocation({ uri });
+    ).createInvocation({ server: serverName, uri });
 
-    // Verify description
     expect(invocation.getDescription()).toBe(
       `Read MCP resource "${resourceName}" from server "${serverName}"`,
     );
@@ -79,7 +77,7 @@ describe('ReadMcpResourceTool', () => {
       returnDisplay: string;
     };
 
-    expect(mockMcpManager.findResourceByUri).toHaveBeenCalledWith(uri);
+    expect(mockMcpManager.findResource).toHaveBeenCalledWith(serverName, uri);
     expect(mockMcpManager.getClient).toHaveBeenCalledWith(serverName);
     expect(mockClient.readResource).toHaveBeenCalledWith(uri);
     expect(result).toEqual({
@@ -88,23 +86,20 @@ describe('ReadMcpResourceTool', () => {
     });
   });
 
-  it('should pass raw URI to client when using qualified URI', async () => {
-    const qualifiedUri = 'test-server:protocol://resource';
-    const rawUri = 'protocol://resource';
-    const serverName = 'test-server';
-    const resourceName = 'Test Resource';
-    const resourceContent = 'Resource Content';
-
-    mockMcpManager.findResourceByUri.mockReturnValue({
-      uri: rawUri,
-      serverName,
-      name: resourceName,
-    });
-
+  it('keeps colliding skill:// URIs distinct via the server param', async () => {
+    // The motivating skills regression: two MCP servers expose
+    // `skill://index.json`. With server required, the right resource is
+    // resolved instead of a silent first-match.
+    const uri = 'skill://index.json';
+    mockMcpManager.findResource.mockImplementation((server: string) =>
+      server === 'github'
+        ? { uri, serverName: 'github', name: 'github-skills' }
+        : undefined,
+    );
     const mockClient = {
-      readResource: vi.fn().mockResolvedValue({
-        contents: [{ text: resourceContent }],
-      }),
+      readResource: vi
+        .fn()
+        .mockResolvedValue({ contents: [{ text: 'gh body' }] }),
     };
     mockMcpManager.getClient.mockReturnValue(mockClient);
 
@@ -114,20 +109,17 @@ describe('ReadMcpResourceTool', () => {
           execute: (options: { abortSignal: AbortSignal }) => Promise<unknown>;
         };
       }
-    ).createInvocation({ uri: qualifiedUri });
+    ).createInvocation({ server: 'github', uri });
 
     const result = (await invocation.execute({ abortSignal })) as {
       llmContent: string;
-      returnDisplay: string;
     };
 
-    expect(mockMcpManager.findResourceByUri).toHaveBeenCalledWith(qualifiedUri);
-    expect(mockMcpManager.getClient).toHaveBeenCalledWith(serverName);
-    expect(mockClient.readResource).toHaveBeenCalledWith(rawUri);
-    expect(result.llmContent).toBe(resourceContent + '\n');
+    expect(mockMcpManager.findResource).toHaveBeenCalledWith('github', uri);
+    expect(result.llmContent).toBe('gh body\n');
   });
 
-  it('should return error if MCP Client Manager not available', async () => {
+  it('returns error if MCP Client Manager not available', async () => {
     mockContext.config.getMcpClientManager.mockReturnValue(undefined);
 
     const invocation = (
@@ -136,7 +128,7 @@ describe('ReadMcpResourceTool', () => {
           execute: (options: { abortSignal: AbortSignal }) => Promise<unknown>;
         };
       }
-    ).createInvocation({ uri: 'uri' });
+    ).createInvocation({ server: 's', uri: 'uri' });
     const result = (await invocation.execute({ abortSignal })) as {
       error: { type: string; message: string };
     };
@@ -145,8 +137,24 @@ describe('ReadMcpResourceTool', () => {
     expect(result.error?.message).toContain('MCP Client Manager not available');
   });
 
-  it('should return error if resource not found', async () => {
-    mockMcpManager.findResourceByUri.mockReturnValue(undefined);
+  it('returns INVALID_TOOL_PARAMS when server is missing', async () => {
+    const invocation = (
+      tool as unknown as {
+        createInvocation: (params: Record<string, unknown>) => {
+          execute: (options: { abortSignal: AbortSignal }) => Promise<unknown>;
+        };
+      }
+    ).createInvocation({ uri: 'skill://index.json' });
+    const result = (await invocation.execute({ abortSignal })) as {
+      error: { type: string; message: string };
+    };
+
+    expect(result.error?.type).toBe(ToolErrorType.INVALID_TOOL_PARAMS);
+    expect(result.error?.message).toContain('server');
+  });
+
+  it('returns a not-found error naming both server and uri', async () => {
+    mockMcpManager.findResource.mockReturnValue(undefined);
 
     const invocation = (
       tool as unknown as {
@@ -154,24 +162,21 @@ describe('ReadMcpResourceTool', () => {
           execute: (options: { abortSignal: AbortSignal }) => Promise<unknown>;
         };
       }
-    ).createInvocation({ uri: 'uri' });
+    ).createInvocation({ server: 'filesystem', uri: 'skill://index.json' });
     const result = (await invocation.execute({ abortSignal })) as {
       error: { type: string; message: string };
     };
 
     expect(result.error?.type).toBe(ToolErrorType.MCP_RESOURCE_NOT_FOUND);
-    expect(result.error?.message).toContain('Resource not found');
+    expect(result.error?.message).toContain('skill://index.json');
+    expect(result.error?.message).toContain('filesystem');
   });
 
-  it('should return error if reading fails', async () => {
+  it('returns error if reading fails', async () => {
     const uri = 'protocol://resource';
     const serverName = 'test-server';
 
-    mockMcpManager.findResourceByUri.mockReturnValue({
-      uri,
-      serverName,
-    });
-
+    mockMcpManager.findResource.mockReturnValue({ uri, serverName });
     const mockClient = {
       readResource: vi.fn().mockRejectedValue(new Error('Failed to read')),
     };
@@ -183,7 +188,7 @@ describe('ReadMcpResourceTool', () => {
           execute: (options: { abortSignal: AbortSignal }) => Promise<unknown>;
         };
       }
-    ).createInvocation({ uri });
+    ).createInvocation({ server: serverName, uri });
     const result = (await invocation.execute({ abortSignal })) as {
       error: { type: string; message: string };
     };

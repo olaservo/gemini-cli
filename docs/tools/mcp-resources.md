@@ -26,18 +26,25 @@ what external data sources are available for reference.
 
 ## 2. `read_mcp_resource` (ReadMcpResource)
 
-`read_mcp_resource` retrieves the content of a specific resource identified by
-its URI.
+`read_mcp_resource` retrieves the content of a specific resource on a named MCP
+server. The `server` parameter is required because two servers can expose the
+same URI (for example, multiple servers exposing `skill://index.json`), so the
+URI alone is not enough to identify a resource unambiguously. Use
+`list_mcp_resources` first to discover available resources and the server each
+one is exposed by.
 
 - **Tool name:** `read_mcp_resource`
 - **Display name:** Read MCP Resource
 - **Kind:** `Read`
 - **File:** `read-mcp-resource.ts`
 - **Parameters:**
-  - `uri` (string, required): The URI of the MCP resource to read.
+  - `server` (string, required): Name of the MCP server hosting the resource (as
+    reported by `list_mcp_resources`).
+  - `uri` (string, required): URI of the MCP resource to read (e.g.
+    `file:///path/to/file`, `skill://name`).
 - **Behavior:**
-  - Locates the resource and its associated server by URI.
-  - Calls the server's `resources/read` method.
+  - Looks the resource up in the registry by `(server, uri)`.
+  - Calls that server's `resources/read` method.
   - Processes the response, extracting text or binary data.
 - **Output (`llmContent`):** The content of the resource. For binary data, it
   returns a placeholder indicating the data type.

@@ -19,6 +19,7 @@ import { ToolErrorType } from './tool-error.js';
 import type { MCPResource } from '../resources/resource-registry.js';
 
 export interface ReadMcpResourceParams {
+  server: string;
   uri: string;
 }
 
@@ -68,14 +69,14 @@ class ReadMcpResourceToolInvocation extends BaseToolInvocation<
   ) {
     super(params, messageBus, ReadMcpResourceTool.Name, 'Read MCP Resource');
     const mcpManager = this.context.config.getMcpClientManager();
-    this.resource = mcpManager?.findResourceByUri(params.uri);
+    this.resource = mcpManager?.findResource(params.server, params.uri);
   }
 
   getDescription(): string {
     if (this.resource) {
       return `Read MCP resource "${this.resource.name}" from server "${this.resource.serverName}"`;
     }
-    return `Read MCP resource: ${this.params.uri}`;
+    return `Read MCP resource: ${this.params.uri} (server: ${this.params.server})`;
   }
 
   async execute({
@@ -93,21 +94,22 @@ class ReadMcpResourceToolInvocation extends BaseToolInvocation<
       };
     }
 
-    const uri = this.params.uri;
-    if (!uri) {
+    const { server, uri } = this.params;
+    if (!uri || !server) {
+      const missing = !uri ? 'uri' : 'server';
       return {
-        llmContent: 'Error: No URI provided.',
-        returnDisplay: 'Error: No URI provided.',
+        llmContent: `Error: Missing required parameter "${missing}".`,
+        returnDisplay: `Error: Missing required parameter "${missing}".`,
         error: {
-          message: 'No URI provided.',
+          message: `Missing required parameter "${missing}". Both "server" and "uri" are required; use list_mcp_resources to discover them.`,
           type: ToolErrorType.INVALID_TOOL_PARAMS,
         },
       };
     }
 
-    const resource = mcpManager.findResourceByUri(uri);
+    const resource = mcpManager.findResource(server, uri);
     if (!resource) {
-      const errorMessage = `Resource not found for URI: ${uri}`;
+      const errorMessage = `Resource not found for uri "${uri}" on server "${server}". Use list_mcp_resources to see what is available.`;
       return {
         llmContent: `Error: ${errorMessage}`,
         returnDisplay: `Error: ${errorMessage}`,
@@ -133,10 +135,6 @@ class ReadMcpResourceToolInvocation extends BaseToolInvocation<
 
     try {
       const result = await client.readResource(resource.uri);
-      // The result should contain contents.
-      // Let's assume it returns a string or an object with contents.
-      // According to MCP spec, it returns { contents: [...] }.
-      // We should format it nicely.
       let contentText = '';
       if (result && result.contents) {
         for (const content of result.contents) {
@@ -150,9 +148,7 @@ class ReadMcpResourceToolInvocation extends BaseToolInvocation<
 
       return {
         llmContent: contentText || 'No content returned from resource.',
-        returnDisplay: this.resource
-          ? `Successfully read resource "${this.resource.name}" from server "${this.resource.serverName}"`
-          : `Successfully read resource: ${uri}`,
+        returnDisplay: `Successfully read resource "${resource.name}" from server "${resource.serverName}"`,
       };
     } catch (e) {
       const errorMessage = `Failed to read resource: ${e instanceof Error ? e.message : String(e)}`;

@@ -138,6 +138,25 @@ function parseAllAtCommands(
   );
 }
 
+/**
+ * Parses a `@<server>:<uri>` mention into (server, uri). Splits on the first
+ * colon: server names cannot contain colons, but resource URIs typically do
+ * (file://, https://, skill://), so the first colon is unambiguous as the
+ * boundary. Returns null if the input doesn't have the qualified shape.
+ */
+function parseQualifiedResourceMention(
+  identifier: string,
+): { server: string; uri: string } | null {
+  const colonIndex = identifier.indexOf(':');
+  if (colonIndex <= 0) {
+    return null;
+  }
+  return {
+    server: identifier.substring(0, colonIndex),
+    uri: identifier.substring(colonIndex + 1),
+  };
+}
+
 function categorizeAtCommands(
   commandParts: AtCommandPart[],
   config: Config,
@@ -159,10 +178,17 @@ function categorizeAtCommands(
     }
 
     const name = part.content.substring(1);
+    const qualified = parseQualifiedResourceMention(name);
 
     if (agentRegistry?.getDefinition(name)) {
       agentParts.push(part);
-    } else if (resourceRegistry.findResourceByUri(name)) {
+    } else if (
+      qualified &&
+      resourceRegistry.findResourceByServerAndUri(
+        qualified.server,
+        qualified.uri,
+      )
+    ) {
       resourceParts.push(part);
     } else {
       fileParts.push(part);
@@ -419,11 +445,17 @@ async function readMcpResources(
   const displays: IndividualToolCallDisplay[] = [];
 
   const resourcePromises = resourceParts.map(async (part) => {
-    const uri = part.content.substring(1);
-    const resource = resourceRegistry.findResourceByUri(uri);
+    const identifier = part.content.substring(1);
+    const qualified = parseQualifiedResourceMention(identifier);
+    const resource = qualified
+      ? resourceRegistry.findResourceByServerAndUri(
+          qualified.server,
+          qualified.uri,
+        )
+      : undefined;
     if (!resource) {
       // Should not happen as it was categorized as a resource
-      return { success: false, parts: [], uri };
+      return { success: false, parts: [], uri: identifier };
     }
 
     const client = mcpClientManager?.getClient(resource.serverName);

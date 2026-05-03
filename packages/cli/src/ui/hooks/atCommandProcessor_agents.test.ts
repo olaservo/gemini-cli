@@ -128,7 +128,7 @@ describe('handleAtCommand with Agents', () => {
       getUsageStatisticsEnabled: () => false,
       getEnableExtensionReloading: () => false,
       getResourceRegistry: () => ({
-        findResourceByUri: () => undefined,
+        findResourceByServerAndUri: () => undefined,
         getAllResources: () => [],
       }),
       getMcpClientManager: () => ({

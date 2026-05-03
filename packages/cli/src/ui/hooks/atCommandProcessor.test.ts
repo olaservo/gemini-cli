@@ -140,7 +140,7 @@ describe('handleAtCommand', () => {
       getUsageStatisticsEnabled: () => false,
       getEnableExtensionReloading: () => false,
       getResourceRegistry: () => ({
-        findResourceByUri: () => undefined,
+        findResourceByServerAndUri: () => undefined,
         getAllResources: () => [],
       }),
       getMcpClientManager: () => ({
@@ -1326,8 +1326,8 @@ describe('handleAtCommand', () => {
       } as DiscoveredMCPResource;
 
       vi.spyOn(mockConfig, 'getResourceRegistry').mockReturnValue({
-        findResourceByUri: (identifier: string) =>
-          identifier === prefixedUri ? resource : undefined,
+        findResourceByServerAndUri: (s: string, u: string) =>
+          s === serverName && u === resourceUri ? resource : undefined,
         getAllResources: () => [],
       } as never);
 
@@ -1371,8 +1371,8 @@ describe('handleAtCommand', () => {
       const resourceUri = 'resource://server-1/logs';
       const prefixedUri = `${serverName}:${resourceUri}`;
       vi.spyOn(mockConfig, 'getResourceRegistry').mockReturnValue({
-        findResourceByUri: (identifier: string) =>
-          identifier === prefixedUri
+        findResourceByServerAndUri: (s: string, u: string) =>
+          s === serverName && u === resourceUri
             ? ({
                 serverName,
                 uri: resourceUri,
